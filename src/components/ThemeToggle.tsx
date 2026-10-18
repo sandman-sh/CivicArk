@@ -4,7 +4,7 @@ import { Sun, Moon } from 'lucide-react';
 export const ThemeToggle = () => {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const stored = localStorage.getItem('civicark_theme');
-    return stored === 'dark' || stored === 'light' ? stored : 'dark';
+    return stored === 'dark' || stored === 'light' ? stored : 'light';
   });
 
   useEffect(() => {
