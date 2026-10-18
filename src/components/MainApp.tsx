@@ -499,7 +499,7 @@ export const MainApp = ({ session, onOpenAuth }: MainAppProps) => {
 
   return (
     <div className="app-shell product-shell">
-      <NagrikSaathi key={`${session.role}:${session.address.toLowerCase()}`} session={session} onNavigate={page => setActiveSection(page)} onRefresh={() => { void loadData(); }} />
+      <NagrikSaathi key={`${session.role}:${session.address.toLowerCase()}`} onNavigate={page => setActiveSection(page)} onRefresh={() => { void loadData(); }} />
       <aside className="product-sidebar">
         <div className="sidebar-section-label">Workspace</div>
         <nav className="product-nav">

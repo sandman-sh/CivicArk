@@ -22,22 +22,7 @@ const loadEnv = () => {
 loadEnv();
 
 const port = Number(process.env.PORT || 8787);
-const AI_ROLE_WALLETS = { engineer: 'CIVICARK_ENGINEER_WALLETS', contractor: 'CIVICARK_CONTRACTOR_WALLETS', auditor: 'CIVICARK_AUDITOR_WALLETS' };
-const AI_ROLE_PAGES = { citizen: ['overview','work','reports','map','activity'], engineer: ['overview','work','reports','operations','audit','areas','map','activity'], contractor: ['overview','work','reports','operations','map','activity'], auditor: ['overview','work','reports','audit','areas','map','activity'] };
-
-const resolveAiRole = async input => {
-  if (input.role === 'citizen') return 'citizen';
-  const proof = input.roleProof;
-  const envName = AI_ROLE_WALLETS[input.role];
-  if (!envName || !proof || String(proof.address).toLowerCase() !== String(input.address).toLowerCase() || !/^0x[a-fA-F0-9]{40}$/.test(proof.address || '') || !/^0x[a-fA-F0-9]{130}$/.test(proof.signature || '')) return 'citizen';
-  const expires = Number(proof.expires);
-  if (!Number.isFinite(expires) || expires < Date.now() || expires > Date.now() + 120_000) return 'citizen';
-  const allowlist = (process.env[envName] || '').split(',').map(address => address.trim().toLowerCase()).filter(Boolean);
-  if (!allowlist.includes(proof.address.toLowerCase())) return 'citizen';
-  const message = `CivicArk AI role proof\n${input.role}\n${proof.address.toLowerCase()}\n${expires}`;
-  try { return await verifyMessage({ address: proof.address, message, signature: proof.signature }) ? input.role : 'citizen'; }
-  catch { return 'citizen'; }
-};
+const AI_CITIZEN_PAGES = ['overview','work','reports','map','activity'];
 
 const json = (res, status, value) => {
   if (res.headersSent) return;
@@ -86,10 +71,8 @@ const handleApi = async (req, res, pathname) => {
         return true;
       }
       const model = input.model || process.env.OPENROUTER_MODEL || 'deepseek/deepseek-chat';
-      const authorizedRole = await resolveAiRole(input);
       const allowedTools = new Set(['search_tenders','search_defects','network_status','navigate_workspace','refresh_workspace']);
-      if (authorizedRole === 'engineer') allowedTools.add('create_tender');
-      const tools = (Array.isArray(input.tools) ? input.tools : []).filter(tool => allowedTools.has(tool?.function?.name)).map(tool => tool.function.name !== 'navigate_workspace' ? tool : { ...tool, function: { ...tool.function, parameters: { ...tool.function.parameters, properties: { ...tool.function.parameters?.properties, page: { ...tool.function.parameters?.properties?.page, enum: AI_ROLE_PAGES[authorizedRole] } } } } });
+      const tools = (Array.isArray(input.tools) ? input.tools : []).filter(tool => allowedTools.has(tool?.function?.name)).map(tool => tool.function.name !== 'navigate_workspace' ? tool : { ...tool, function: { ...tool.function, parameters: { ...tool.function.parameters, properties: { ...tool.function.parameters?.properties, page: { ...tool.function.parameters?.properties?.page, enum: AI_CITIZEN_PAGES } } } } });
       const upstream = await fetch(providerUrl, {
         method: 'POST',
         headers: {
@@ -109,7 +92,7 @@ const handleApi = async (req, res, pathname) => {
       });
       const text = await upstream.text();
       const response = JSON.parse(text);
-      response.authorizedRole = authorizedRole;
+      response.authorizedRole = 'citizen';
       res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       res.end(JSON.stringify(response));
       return true;

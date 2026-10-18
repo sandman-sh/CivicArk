@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Bot, Mic, Send, Settings2, Volume2, X } from 'lucide-react';
-import { fetchDefectsFromArkiv, fetchTendersFromArkiv, getTiramisuNetworkInfo, createTenderOnArkiv } from '../lib/arkiv';
-import type { UserSession } from '../types/civic';
+import { fetchDefectsFromArkiv, fetchTendersFromArkiv, getTiramisuNetworkInfo } from '../lib/arkiv';
 
 type Message = { role: 'user' | 'assistant'; content: string };
 
@@ -20,11 +19,8 @@ const SHARED_TOOLS = [
   { type: 'function', function: { name: 'navigate_workspace', description: 'Open an available workspace page for the current role.', parameters: { type: 'object', required: ['page'], properties: { page: { type: 'string', enum: ['overview','work','reports','operations','audit','areas','map','activity'] } } } } },
   { type: 'function', function: { name: 'refresh_workspace', description: 'Refresh current public ledger, report and network data.', parameters: { type: 'object', properties: {} } } },
 ];
-const ENGINEER_TOOLS = [
-  { type: 'function', function: { name: 'create_tender', description: 'Prepare a municipal tender proposal. Never execute silently; the app will ask the user to confirm the wallet transaction. Ask the user for the contractor wallet address.', parameters: { type: 'object', required: ['title', 'ward', 'roadName', 'budgetInr', 'contractorAddress'], properties: { title: { type: 'string' }, ward: { type: 'string' }, roadName: { type: 'string' }, budgetInr: { type: 'number' }, contractorAddress: { type: 'string' }, contractorName: { type: 'string' } } } } },
-];
 type WorkspacePage = 'overview' | 'work' | 'reports' | 'operations' | 'audit' | 'areas' | 'map' | 'activity';
-const ROLE_PAGES: Record<UserSession['role'], WorkspacePage[]> = { citizen: ['overview','work','reports','map','activity'], engineer: ['overview','work','reports','operations','audit','areas','map','activity'], contractor: ['overview','work','reports','operations','map','activity'], auditor: ['overview','work','reports','audit','areas','map','activity'] };
+const CITIZEN_PAGES: WorkspacePage[] = ['overview','work','reports','map','activity'];
 
 function explainApiError(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -76,22 +72,19 @@ function renderMarkdown(content: string): ReactNode {
   return blocks;
 }
 
-export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: UserSession; onNavigate: (page: WorkspacePage) => void; onRefresh: () => void }) {
+export function NagrikSaathi({ onNavigate, onRefresh }: { onNavigate: (page: WorkspacePage) => void; onRefresh: () => void }) {
   const [open, setOpen] = useState(false);
   const [settings, setSettings] = useState(false);
   const [input, setInput] = useState('');
   const [model, setModel] = useState(localStorage.getItem('civicark_ai_model') || 'deepseek/deepseek-chat-v3.1:free');
   const [language, setLanguage] = useState(localStorage.getItem('civicark_ai_language') || 'English');
   const [apiKey, setApiKey] = useState('');
-  const [roleProof, setRoleProof] = useState<{ role: UserSession['role']; address: string; expires: number; signature: string } | null>(null);
-  const [agentRole, setAgentRole] = useState<UserSession['role']>('citizen');
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const voiceStopRef = useRef<() => void>(() => {});
   const messagesPaneRef = useRef<HTMLDivElement>(null);
-  const [pendingTender, setPendingTender] = useState<{ title: string; ward: string; roadName: string; budgetInr: number; contractorAddress: string; contractorName: string } | null>(null);
-  const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', content: `Hello! I’m Nagrik Saathi for your ${session.role} workspace. I can search public records, refresh this workspace, and open pages available to this role.` }]);
+  const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', content: 'Hello! I’m Nagrik Saathi. I can search public records, check network status, refresh your workspace, and open citizen pages.' }]);
 
   useEffect(() => {
     if (localStorage.getItem('civicark_ai_model')) return;
@@ -109,7 +102,7 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
     if (!pane) return;
     const frame = window.requestAnimationFrame(() => pane.scrollTo({ top: pane.scrollHeight, behavior: 'smooth' }));
     return () => window.cancelAnimationFrame(frame);
-  }, [messages, busy, pendingTender]);
+  }, [messages, busy]);
 
   const speak = (text: string) => {
     if ('speechSynthesis' in window) window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
@@ -199,22 +192,10 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
     const next = [...messages, { role: 'user' as const, content: text }];
     setMessages(next); setInput(''); setBusy(true);
     try {
-      let proof = roleProof;
-      if (session.role !== 'citizen' && session.isMetaMask && (!proof || proof.role !== session.role || proof.address.toLowerCase() !== session.address.toLowerCase() || proof.expires < Date.now() + 15_000)) {
-        const expires = Date.now() + 90_000;
-        const address = session.address.toLowerCase();
-        const message = `CivicArk AI role proof\n${session.role}\n${address}\n${expires}`;
-        const signature = await (window as any).ethereum.request({ method: 'personal_sign', params: [message, session.address] });
-        proof = { role: session.role, address, expires, signature };
-        setRoleProof(proof);
-      }
-      const roleTools = session.role === 'engineer' ? [...SHARED_TOOLS, ...ENGINEER_TOOLS] : SHARED_TOOLS;
-      const response = await fetch('/api/ai/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, apiKey: apiKey || undefined, role: session.role, address: session.address, roleProof: proof && proof.role === session.role ? proof : undefined, tools: roleTools, messages: [{ role: 'system', content: `${SYSTEM}\nSelected language: ${language}. The server authorizes tools for this request; never claim access beyond the tools provided. Public chain records are not private departmental databases.`, }, ...next] }) });
+      const response = await fetch('/api/ai/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, apiKey: apiKey || undefined, role: 'citizen', tools: SHARED_TOOLS, messages: [{ role: 'system', content: `${SYSTEM}\nYou are operating with citizen-level public access, regardless of the workspace role. Do not claim access to private departmental data or privileged actions. Selected language: ${language}.`, }, ...next] }) });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(`AI request failed (${response.status}): ${explainApiError(data.error || data.message || data)}`);
       const assistant = data.choices?.[0]?.message;
-      const authorizedRole: UserSession['role'] = ['citizen','engineer','contractor','auditor'].includes(data.authorizedRole) ? data.authorizedRole : 'citizen';
-      setAgentRole(authorizedRole);
       const toolCalls = Array.isArray(assistant?.tool_calls) ? assistant.tool_calls.slice(0, 4) : [];
       const toolAnswers: string[] = [];
       for (const call of toolCalls) {
@@ -231,7 +212,7 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
         try {
           if (name === 'navigate_workspace') {
             const page = String(args.page || '') as WorkspacePage;
-            if (!ROLE_PAGES[authorizedRole].includes(page)) toolAnswers.push(`This page is not available to the verified ${authorizedRole} agent role.`);
+            if (!CITIZEN_PAGES.includes(page)) toolAnswers.push('That page is not available to the public assistant.');
             else { onNavigate(page); toolAnswers.push(`Opened the ${page.replaceAll('_', ' ')} page.`); }
           } else if (name === 'refresh_workspace') {
             onRefresh(); toolAnswers.push('Refreshing the workspace from its connected data sources.');
@@ -239,8 +220,8 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
             const ward = typeof args.ward === 'string' ? args.ward : undefined;
             const query = typeof args.query === 'string' ? args.query.toLowerCase() : '';
             const result = await fetchTendersFromArkiv(ward);
-            const matches = result.tenders.filter(t => (authorizedRole !== 'contractor' || (session.isMetaMask && t.contractor.toLowerCase() === session.address.toLowerCase())) && (!query || `${t.title} ${t.roadName} ${t.tenderId}`.toLowerCase().includes(query))).slice(0, 8);
-            toolAnswers.push(matches.length ? matches.map(t => `${t.tenderId}: ${t.title} — ${t.ward}, ${t.roadName}, ₹${t.budgetInr.toLocaleString('en-IN')}, ${t.status}${authorizedRole === 'engineer' || authorizedRole === 'auditor' ? `, contractor ${t.contractorName}, engineer ${t.engineerName}` : ''}`).join('\n') : authorizedRole === 'contractor' ? 'No public work records are linked to this connected wallet.' : result.source === 'arkiv_chain' ? 'No matching tenders found in the Arkiv ledger.' : 'No matching tenders found in the locally cached on-chain records.');
+            const matches = result.tenders.filter(t => (!query || `${t.title} ${t.roadName} ${t.tenderId}`.toLowerCase().includes(query))).slice(0, 8);
+            toolAnswers.push(matches.length ? matches.map(t => `${t.tenderId}: ${t.title} — ${t.ward}, ${t.roadName}, ₹${t.budgetInr.toLocaleString('en-IN')}, ${t.status}`).join('\n') : result.source === 'arkiv_chain' ? 'No matching tenders found in the Arkiv ledger.' : 'No matching tenders found in the locally cached on-chain records.');
           } else if (name === 'search_defects') {
             const tenderId = typeof args.tenderId === 'string' ? args.tenderId.toLowerCase() : '';
             const severity = typeof args.severity === 'string' ? args.severity.toLowerCase() : '';
@@ -250,11 +231,6 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
           } else if (name === 'network_status') {
             const info = await getTiramisuNetworkInfo();
             toolAnswers.push(info.blockNumber > 0n ? `Arkiv Tiramisu is reachable. Block ${info.blockNumber.toString()}, RPC latency ${info.latencyMs}ms, chain ${info.chainId}.` : `Arkiv Tiramisu did not respond to the RPC check. Chain ${info.chainId}; block and latency are unavailable.`);
-          } else if (name === 'create_tender') {
-            const proposal = { title: String(args.title || '').trim(), ward: String(args.ward || '').trim(), roadName: String(args.roadName || '').trim(), budgetInr: Number(args.budgetInr), contractorAddress: String(args.contractorAddress || '').trim(), contractorName: String(args.contractorName || 'Contractor').trim() };
-            if (!session.isMetaMask || session.role !== 'engineer' || authorizedRole !== 'engineer') toolAnswers.push('Tender publishing requires a wallet authorized in the server-side engineer allowlist. This session is read-only.');
-            else if (!/^0x[a-fA-F0-9]{40}$/.test(proposal.contractorAddress) || !Number.isFinite(proposal.budgetInr) || proposal.budgetInr <= 0 || !proposal.title || !proposal.roadName || !proposal.ward) toolAnswers.push('I need a valid contractor wallet, positive budget, title, ward, and road name to prepare a tender.');
-            else { setPendingTender(proposal); toolAnswers.push(`Tender proposal prepared for ${proposal.roadName} in ${proposal.ward}. Review it in the confirmation card before signing.`); }
           } else toolAnswers.push(`The requested tool “${String(name || 'unknown')}” is not available for this role.`);
         } catch (error) {
           toolAnswers.push(`${String(name || 'Requested action')} failed: ${error instanceof Error ? error.message : 'Unexpected tool error.'}`);
@@ -262,7 +238,6 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
       }
       let answer = [typeof assistant?.content === 'string' ? assistant.content : '', ...toolAnswers].filter(Boolean).join('\n\n');
       if (!answer) answer = 'I could not understand that request.';
-      if (session.role !== 'citizen' && authorizedRole === 'citizen') answer = `This session is a read-only role preview. The agent is restricted to public tools because this wallet is not server-authorized for ${session.role} access.\n\n${answer}`;
       setMessages(current => [...current, { role: 'assistant', content: answer }]);
       speak(answer);
     } catch (error) {
@@ -270,32 +245,20 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
     } finally { setBusy(false); }
   };
 
-  const confirmTender = async () => {
-    if (!pendingTender) return;
-    setBusy(true);
-    try {
-      const now = Math.floor(Date.now() / 1000);
-      const result = await createTenderOnArkiv({
-        tenderId: `BMC-2026-${pendingTender.ward.replace(/[^A-Z]/g, '')}-AI-${Date.now()}`,
-        title: pendingTender.title, city: 'Mumbai', ward: pendingTender.ward, wardName: pendingTender.ward, roadName: pendingTender.roadName,
-        category: 'roadwork', status: 'warranty_active', budgetInr: pendingTender.budgetInr, contractor: pendingTender.contractorAddress, contractorName: pendingTender.contractorName, engineer: session.address, engineerName: session.displayName,
-        dlpYears: 3, dlpExpiryTimestamp: now + 86400 * 365 * 3, defectCount: 0, awardedAt: now,
-        specs: { material: '', thicknessMm: 0, coreSampleLabCid: '', labAccreditation: '' },
-        milestones: [{ phase: 'Tender sanctioned by Nagrik Saathi', signedBy: session.address, role: session.role, timestamp: now, status: 'done', notes: 'Explicit user-confirmed Arkiv write.' }],
-      }, session);
-      setMessages(current => [...current, { role: 'assistant', content: `Tender published on Arkiv. Entity: ${result.entityKey}\nTransaction: ${result.txHash}` }]);
-      setPendingTender(null);
-    } catch (error) {
-      setMessages(current => [...current, { role: 'assistant', content: `Arkiv write failed and was not treated as successful: ${error instanceof Error ? error.message : 'unknown error'}` }]);
-    } finally { setBusy(false); }
-  };
-
   return <>
     <button className="saathi-launcher" onClick={() => setOpen(true)} aria-label="Open Nagrik Saathi"><Bot size={21} /><span>Nagrik Saathi</span></button>
     {open && <aside className="saathi-panel">
-      <header><div><Bot size={18} /><strong>Nagrik Saathi</strong><small>{agentRole === 'citizen' ? 'Public read-only tools' : `${agentRole} tools · wallet verified`}</small></div><div className="saathi-actions"><button className={voiceActive ? 'saathi-recording' : ''} onClick={startVoiceAgent} aria-label="Start live voice"><Mic size={16} /></button><button onClick={() => setSettings(!settings)} aria-label="AI settings"><Settings2 size={16} /></button><button onClick={() => setOpen(false)} aria-label="Close"><X size={16} /></button></div></header>
+      <header><div><Bot size={18} /><strong>Nagrik Saathi</strong><small>Citizen tools · public records</small></div><div className="saathi-actions"><button className={voiceActive ? 'saathi-recording' : ''} onClick={startVoiceAgent} aria-label="Start live voice"><Mic size={16} /></button><button onClick={() => setSettings(!settings)} aria-label="AI settings"><Settings2 size={16} /></button><button onClick={() => setOpen(false)} aria-label="Close"><X size={16} /></button></div></header>
       {settings && <section className="saathi-settings"><label>Language<select value={language} onChange={e => { setLanguage(e.target.value); localStorage.setItem('civicark_ai_language', e.target.value); }}><option>Hinglish</option><option>English</option><option>Hindi</option><option>Marathi</option><option>Bengali</option><option>Tamil</option><option>Telugu</option><option>Gujarati</option><option>Kannada</option><option>Malayalam</option><option>Punjabi</option><option>Odia</option><option>Urdu</option></select></label><label>Model<input value={model} onChange={e => { setModel(e.target.value); localStorage.setItem('civicark_ai_model', e.target.value); }} /></label><button type="button" className="btn btn-ghost btn-sm" onClick={() => { localStorage.removeItem('civicark_ai_model'); void fetch('/api/health').then(response => response.json()).then(health => { if (typeof health.model === 'string') setModel(health.model); }).catch(() => setModel('deepseek/deepseek-chat-v3.1:free')); }}>Use gateway default model</button><label>OpenRouter API key <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-or-… · sent for this request" /></label><small>Use an OpenRouter key for the configured gateway. A key is sent only with this request, not stored in the browser. Public chain records are visible to every role.</small></section>}
-      <div className="saathi-messages" ref={messagesPaneRef}>{messages.map((message, index) => <div className={`saathi-message ${message.role}`} key={`${message.role}-${index}`}><div className="saathi-message-content">{renderMarkdown(message.content)}</div>{message.role === 'assistant' && <button onClick={() => speak(message.content)} aria-label="Read aloud"><Volume2 size={13} /></button>}</div>)}{pendingTender && <div className="saathi-confirm"><strong>Confirm Arkiv write</strong><span>{pendingTender.title} · {pendingTender.ward} · ₹{pendingTender.budgetInr.toLocaleString('en-IN')} · Contractor {pendingTender.contractorAddress}</span><button onClick={confirmTender} disabled={busy}>Confirm Arkiv Write</button><button onClick={() => setPendingTender(null)} disabled={busy}>Cancel</button></div>}{busy && <div className="saathi-message assistant">Thinking…</div>}</div>
+      <div className="saathi-messages" ref={messagesPaneRef}>
+        {messages.map((message, index) => (
+          <div className={`saathi-message ${message.role}`} key={`${message.role}-${index}`}>
+            <div className="saathi-message-content">{renderMarkdown(message.content)}</div>
+            {message.role === 'assistant' && <button onClick={() => speak(message.content)} aria-label="Read aloud"><Volume2 size={13} /></button>}
+          </div>
+        ))}
+        {busy && <div className="saathi-message assistant">Thinking…</div>}
+      </div>
       <div className="saathi-input"><button className={recording ? 'saathi-recording' : ''} onClick={listen} aria-label="Voice input"><Mic size={17} /></button><input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder={recording ? 'Listening…' : 'Ask in Hindi, English or Hinglish…'} /><button onClick={send} aria-label="Send"><Send size={17} /></button></div>
     </aside>}
   </>;
