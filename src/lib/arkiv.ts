@@ -435,9 +435,13 @@ export async function submitDefectChallenge(
   userSession?: UserSession
 ): Promise<{ success: boolean; txHash: string; challenge: DefectChallenge }> {
   const deadline = Math.floor(Date.now() / 1000) + 86400 * 30; // 30-day statutory rectification window
-  if (typeof window === 'undefined' || !(window as any).ethereum || !userSession?.isMetaMask) {
-    throw new Error('Connect a funded wallet on Arkiv Tiramisu to publish a defect challenge.');
-  }
+  if (typeof window === 'undefined' || !(window as any).ethereum || !userSession?.isMetaMask) throw new Error('This session has no wallet signer. Sign in through the wallet button before publishing a defect challenge.');
+  const ethereum = (window as any).ethereum;
+  const accounts = await ethereum.request({ method: 'eth_accounts' }) as string[];
+  const signerAddress = accounts?.find(address => address.toLowerCase() === userSession.address.toLowerCase());
+  if (!signerAddress) throw new Error('The logged-in wallet is not currently authorized for this site. Reconnect the same wallet account; no transaction was submitted.');
+  const activeChain = await ethereum.request({ method: 'eth_chainId' }) as string;
+  if (Number.parseInt(activeChain, 16) !== TIRAMISU_CHAIN_ID && !await switchToTiramisuNetwork()) throw new Error('Arkiv Tiramisu network is required. No report transaction was submitted.');
 
   const payload = jsonToPayload({
     tenderId: challengeData.tenderId,
@@ -459,7 +463,7 @@ export async function submitDefectChallenge(
   const wallet = createWalletClient({
     chain: tiramisu,
     transport: custom((window as any).ethereum),
-    account: userSession.address as `0x${string}`,
+    account: signerAddress as `0x${string}`,
   });
 
   let txHash: string;

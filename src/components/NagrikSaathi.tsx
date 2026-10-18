@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Bot, ImagePlus, Mic, Send, Settings2, Volume2, X } from 'lucide-react';
-import { fetchDefectsFromArkiv, fetchTendersFromArkiv, getTiramisuNetworkInfo, submitDefectChallenge } from '../lib/arkiv';
+import { fetchDefectsFromArkiv, fetchTendersFromArkiv, getTiramisuNetworkInfo, submitDefectChallenge, switchToTiramisuNetwork, TIRAMISU_CHAIN_ID } from '../lib/arkiv';
 import type { DefectChallenge, DefectSeverity, UserSession } from '../types/civic';
 
 type Message = { role: 'user' | 'assistant'; content: string };
@@ -84,6 +84,7 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
   const [reportPhoto, setReportPhoto] = useState<File | null>(null);
   const [reportDraft, setReportDraft] = useState<Omit<DefectChallenge, 'timestamp' | 'status' | 'rectificationDeadline'>>();
   const [submittingReport, setSubmittingReport] = useState(false);
+  const [submissionStep, setSubmissionStep] = useState('');
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
@@ -271,14 +272,30 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
   const confirmDefectReport = async () => {
     if (!reportDraft) return;
     if (!session.isMetaMask || !(window as Window & { ethereum?: unknown }).ethereum) {
-      setMessages(current => [...current, { role: 'assistant', content: 'Connect a wallet on Arkiv Tiramisu before submitting. Your report is still only a draft.' }]);
+      setMessages(current => [...current, { role: 'assistant', content: 'This session is a read-only preview, not a wallet login. Switch to the wallet-connected session to sign this report; nothing has been submitted.' }]);
       return;
     }
     setSubmittingReport(true);
+    setSubmissionStep('Checking the wallet used to log in…');
     try {
+      const ethereum = (window as unknown as { ethereum: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
+      const accounts = await ethereum.request({ method: 'eth_accounts' }) as string[];
+      const signerAddress = accounts?.find(address => address.toLowerCase() === session.address.toLowerCase());
+      if (!signerAddress) throw new Error('The wallet account used to log in is no longer connected to this site. Reconnect that same account in the app; CivicArk will not switch to another account.');
+      const chainId = await ethereum.request({ method: 'eth_chainId' }) as string;
+      if (Number.parseInt(chainId, 16) !== TIRAMISU_CHAIN_ID) {
+        setSubmissionStep('Switching your logged-in wallet to Arkiv Tiramisu…');
+        if (!await switchToTiramisuNetwork()) throw new Error('Could not switch the logged-in wallet to Arkiv Tiramisu. No report transaction was sent.');
+      }
+      if (reportPhoto) {
+        const healthResponse = await fetch('/api/health');
+        const health = await healthResponse.json().catch(() => ({}));
+        if (!health.photoStorageConfigured) throw new Error('Photo uploads are not configured on this deployment. Remove the photo to submit the report without it, or configure PINATA_JWT in the server environment.');
+      }
       let evidencePhotoCid = '';
       if (reportPhoto) {
         if (reportPhoto.size > 3 * 1024 * 1024 || !/^image\/(jpeg|png|webp|heic)$/.test(reportPhoto.type)) throw new Error('Choose a JPEG, PNG, WebP, or HEIC photo under 3 MB.');
+        setSubmissionStep('Approve the photo-upload signature in your logged-in wallet…');
         const timestamp = Date.now().toString();
         const digestBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', await reportPhoto.arrayBuffer()));
         const digest = Array.from(digestBytes, byte => byte.toString(16).padStart(2, '0')).join('');
@@ -290,14 +307,15 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
         if (!upload.ok) throw new Error(uploadResult.error || 'Photo upload failed.');
         evidencePhotoCid = String(uploadResult.cid || '');
       }
-      const result = await submitDefectChallenge({ ...reportDraft, evidencePhotoCid, reportedBy: reportDraft.anonymousDisplay ? '' : session.address, reporterRole: 'citizen' }, session);
+      setSubmissionStep('Approve the Arkiv report transaction in your logged-in wallet…');
+      const result = await submitDefectChallenge({ ...reportDraft, evidencePhotoCid, reportedBy: reportDraft.anonymousDisplay ? '' : signerAddress, reporterRole: 'citizen' }, { ...session, address: signerAddress });
       setReportDraft(undefined);
       setReportPhoto(null);
       setMessages(current => [...current, { role: 'assistant', content: `Your report was submitted to Arkiv Tiramisu.\n\nTransaction: ${result.txHash}\nEntity: ${result.challenge.key}\n\n${result.challenge.anonymousDisplay ? 'Your identity is hidden in the public report display, but the public chain still shows the signing wallet.' : 'The report is publicly associated with the wallet that signed it.'}` }]);
       onRefresh();
     } catch (error) {
       setMessages(current => [...current, { role: 'assistant', content: `The report was not submitted: ${error instanceof Error ? error.message : 'Unexpected error.'}` }]);
-    } finally { setSubmittingReport(false); }
+    } finally { setSubmittingReport(false); setSubmissionStep(''); }
   };
 
   return <>
@@ -319,7 +337,9 @@ export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: User
           {reportDraft.latitude != null && reportDraft.longitude != null && <span>Coordinates: {reportDraft.latitude}, {reportDraft.longitude}</span>}
           <label><input type="checkbox" checked={Boolean(reportDraft.anonymousDisplay)} onChange={event => setReportDraft(current => current ? { ...current, anonymousDisplay: event.target.checked } : current)} /> Hide my identity in the public report display (the chain still identifies the signing wallet)</label>
           <span>{reportPhoto ? `Photo: ${reportPhoto.name}` : 'Photo optional · attach with the image button below'}</span>
-          <button type="button" className="btn btn-primary btn-sm" onClick={() => void confirmDefectReport()} disabled={submittingReport}>{submittingReport ? 'Waiting for wallet…' : 'Confirm and submit report'}</button>
+          <small>The wallet you logged in with will sign this report. Wallet login and report submission are separate approvals.</small>
+          {submissionStep && <span>{submissionStep}</span>}
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => void confirmDefectReport()} disabled={submittingReport}>{submittingReport ? 'Waiting for wallet…' : 'Review & sign with logged-in wallet'}</button>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setReportDraft(undefined)} disabled={submittingReport}>Cancel</button>
         </section>}
         {busy && <div className="saathi-message assistant">Thinking…</div>}
