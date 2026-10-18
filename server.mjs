@@ -71,7 +71,7 @@ const handleApi = async (req, res, pathname) => {
         return true;
       }
       const model = input.model || process.env.OPENROUTER_MODEL || 'deepseek/deepseek-chat';
-      const allowedTools = new Set(['search_tenders','search_defects','network_status','navigate_workspace','refresh_workspace']);
+      const allowedTools = new Set(['search_tenders','search_defects','network_status','navigate_workspace','refresh_workspace','prepare_defect_report']);
       const tools = (Array.isArray(input.tools) ? input.tools : []).filter(tool => allowedTools.has(tool?.function?.name)).map(tool => tool.function.name !== 'navigate_workspace' ? tool : { ...tool, function: { ...tool.function, parameters: { ...tool.function.parameters, properties: { ...tool.function.parameters?.properties, page: { ...tool.function.parameters?.properties?.page, enum: AI_CITIZEN_PAGES } } } } });
       const upstream = await fetch(providerUrl, {
         method: 'POST',

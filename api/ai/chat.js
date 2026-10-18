@@ -11,7 +11,7 @@ export default async function handler(req, res) {
   let target;
   try { target = new URL(endpoint); } catch { return res.status(500).json({ error: 'AI provider endpoint is invalid.' }); }
   if (target.protocol !== 'https:' || target.hostname !== 'openrouter.ai' || target.pathname !== '/api/v1/chat/completions') return res.status(500).json({ error: 'AI requests are restricted to the configured OpenRouter HTTPS endpoint.' });
-  const allowedNames = new Set(['search_tenders', 'search_defects', 'network_status', 'navigate_workspace', 'refresh_workspace']);
+  const allowedNames = new Set(['search_tenders', 'search_defects', 'network_status', 'navigate_workspace', 'refresh_workspace', 'prepare_defect_report']);
   const tools = (Array.isArray(body.tools) ? body.tools : []).filter(tool => allowedNames.has(tool?.function?.name)).map(tool => {
     if (tool.function.name !== 'navigate_workspace') return tool;
     return { ...tool, function: { ...tool.function, parameters: { ...tool.function.parameters, properties: { ...tool.function.parameters?.properties, page: { ...tool.function.parameters?.properties?.page, enum: citizenPages } } } } };

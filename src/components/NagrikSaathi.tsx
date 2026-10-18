@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Bot, Mic, Send, Settings2, Volume2, X } from 'lucide-react';
-import { fetchDefectsFromArkiv, fetchTendersFromArkiv, getTiramisuNetworkInfo } from '../lib/arkiv';
+import { Bot, ImagePlus, Mic, Send, Settings2, Volume2, X } from 'lucide-react';
+import { fetchDefectsFromArkiv, fetchTendersFromArkiv, getTiramisuNetworkInfo, submitDefectChallenge } from '../lib/arkiv';
+import type { DefectChallenge, DefectSeverity, UserSession } from '../types/civic';
 
 type Message = { role: 'user' | 'assistant'; content: string };
 
@@ -11,13 +12,14 @@ const closeAudioContextOnce = (audio: AudioContext) => {
   void audio.close().catch(() => {});
 };
 
-const SYSTEM = `You are Nagrik Saathi, CivicArk's helpful multilingual civic infrastructure assistant. You understand English, Hindi, Hinglish, Marathi, Bengali, Tamil, Telugu, Gujarati, Kannada, Malayalam, Punjabi, Odia and Urdu. Reply in the user's selected language. Explain Arkiv actions before requesting wallet confirmation. Never invent transaction hashes or claim a write succeeded without real Arkiv evidence. Keep private keys and secrets out of chat.`;
+const SYSTEM = `You are Nagrik Saathi, CivicArk's helpful multilingual civic assistant for Mumbai residents. Reply in the user's selected language. Your access is citizen-level in every workspace. You can search public tenders and defect reports, check network status, refresh data, open citizen pages, and help prepare a pothole/defect report. For reports, collect one exact road/landmark and locality, BMC ward if known, a concise description, and severity. If the user gives several localities without one exact spot, ask which one; do not search tenders just because they mention a place. Never claim the app cannot submit reports. Call prepare_defect_report only when you have enough details; if details are missing, ask for them instead. A prepared report is only a draft: clearly say it has not been submitted, and wait for the user to press the in-app confirmation button before any wallet transaction. Photos can be attached with the image button. Never invent report ids, transaction hashes, map locations, or successful writes. Public chain metadata can identify the signing wallet even when display anonymity is selected. Keep private keys and secrets out of chat.`;
 const SHARED_TOOLS = [
   { type: 'function', function: { name: 'search_tenders', description: 'Search live public CivicArk tenders by ward or text.', parameters: { type: 'object', properties: { ward: { type: 'string' }, query: { type: 'string' } } } } },
   { type: 'function', function: { name: 'search_defects', description: 'Search live public defect challenges by tender or severity.', parameters: { type: 'object', properties: { tenderId: { type: 'string' }, severity: { type: 'string' } } } } },
   { type: 'function', function: { name: 'network_status', description: 'Get current Arkiv Tiramisu block and RPC latency.', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'navigate_workspace', description: 'Open an available workspace page for the current role.', parameters: { type: 'object', required: ['page'], properties: { page: { type: 'string', enum: ['overview','work','reports','operations','audit','areas','map','activity'] } } } } },
   { type: 'function', function: { name: 'refresh_workspace', description: 'Refresh current public ledger, report and network data.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'prepare_defect_report', description: 'Prepare a pothole or civic defect report draft for the user to review and explicitly confirm. Use only when exact location, BMC ward, description, and severity are available. Do not submit the report.', parameters: { type: 'object', required: ['ward', 'roadName', 'description', 'severity'], properties: { ward: { type: 'string', description: 'BMC ward code, such as K/W. Ask if unknown rather than guessing.' }, roadName: { type: 'string', description: 'Exact road, junction, landmark, and locality.' }, description: { type: 'string', description: 'What the defect is, its size/condition, and any safety impact.' }, severity: { type: 'string', enum: ['minor','moderate','critical','hazardous'] }, latitude: { type: 'number' }, longitude: { type: 'number' }, anonymousDisplay: { type: 'boolean', description: 'Whether to hide reporter identity in public display. Does not hide the signing wallet from public chain metadata.' } } } } },
 ];
 type WorkspacePage = 'overview' | 'work' | 'reports' | 'operations' | 'audit' | 'areas' | 'map' | 'activity';
 const CITIZEN_PAGES: WorkspacePage[] = ['overview','work','reports','map','activity'];
@@ -72,19 +74,22 @@ function renderMarkdown(content: string): ReactNode {
   return blocks;
 }
 
-export function NagrikSaathi({ onNavigate, onRefresh }: { onNavigate: (page: WorkspacePage) => void; onRefresh: () => void }) {
+export function NagrikSaathi({ session, onNavigate, onRefresh }: { session: UserSession; onNavigate: (page: WorkspacePage) => void; onRefresh: () => void }) {
   const [open, setOpen] = useState(false);
   const [settings, setSettings] = useState(false);
   const [input, setInput] = useState('');
   const [model, setModel] = useState(localStorage.getItem('civicark_ai_model') || 'deepseek/deepseek-chat-v3.1:free');
   const [language, setLanguage] = useState(localStorage.getItem('civicark_ai_language') || 'English');
   const [apiKey, setApiKey] = useState('');
+  const [reportPhoto, setReportPhoto] = useState<File | null>(null);
+  const [reportDraft, setReportDraft] = useState<Omit<DefectChallenge, 'timestamp' | 'status' | 'rectificationDeadline'>>();
+  const [submittingReport, setSubmittingReport] = useState(false);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const voiceStopRef = useRef<() => void>(() => {});
   const messagesPaneRef = useRef<HTMLDivElement>(null);
-  const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', content: 'Hello! I’m Nagrik Saathi. I can search public records, check network status, refresh your workspace, and open citizen pages.' }]);
+  const [messages, setMessages] = useState<Message[]>([{ role: 'assistant', content: 'Hello! I’m Nagrik Saathi. I can search public records, check network status, refresh your workspace, open citizen pages, and help prepare a civic issue report.' }]);
 
   useEffect(() => {
     if (localStorage.getItem('civicark_ai_model')) return;
@@ -231,6 +236,24 @@ export function NagrikSaathi({ onNavigate, onRefresh }: { onNavigate: (page: Wor
           } else if (name === 'network_status') {
             const info = await getTiramisuNetworkInfo();
             toolAnswers.push(info.blockNumber > 0n ? `Arkiv Tiramisu is reachable. Block ${info.blockNumber.toString()}, RPC latency ${info.latencyMs}ms, chain ${info.chainId}.` : `Arkiv Tiramisu did not respond to the RPC check. Chain ${info.chainId}; block and latency are unavailable.`);
+          } else if (name === 'prepare_defect_report') {
+            const ward = String(args.ward || '').trim().toUpperCase();
+            const roadName = String(args.roadName || '').trim();
+            const description = String(args.description || '').trim();
+            const severityInput = String(args.severity || '').trim().toLowerCase();
+            const severityAliases: Record<string, DefectSeverity> = { low: 'minor', medium: 'moderate', high: 'critical', urgent: 'hazardous', minor: 'minor', moderate: 'moderate', critical: 'critical', hazardous: 'hazardous' };
+            const severity = severityAliases[severityInput];
+            const latitude = args.latitude == null ? undefined : Number(args.latitude);
+            const longitude = args.longitude == null ? undefined : Number(args.longitude);
+            if (!/^(?:[A-Z]{1,2}\/[A-Z]|[A-Z])$/.test(ward)) toolAnswers.push('I still need a valid BMC ward code (for example K/W). Ask the user which ward applies; do not infer a ward from a broad locality.');
+            else if (!roadName || roadName.length < 4) toolAnswers.push('I still need one precise road, junction, or nearby landmark and locality. If the user named multiple areas, ask them to choose the exact spot.');
+            else if (!description || description.length < 8) toolAnswers.push('I still need a short description of the defect and any safety impact.');
+            else if (!severity) toolAnswers.push('Ask the user to choose a severity: minor, moderate, critical, or hazardous.');
+            else if ((latitude == null) !== (longitude == null) || (latitude != null && longitude != null && (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < 18.8 || latitude > 19.5 || longitude < 72.7 || longitude > 73.1))) toolAnswers.push('The coordinates are incomplete or outside Mumbai. Ask for both valid coordinates, or leave both out and use the road/landmark.');
+            else {
+              setReportDraft({ tenderKey: 'unlinked', tenderId: 'UNLINKED', ward, roadName, description, severity, evidencePhotoCid: '', reportedBy: session.address, reporterRole: 'citizen', latitude, longitude, anonymousDisplay: Boolean(args.anonymousDisplay), department: 'Roads' });
+              toolAnswers.push('I prepared a report draft for review. It has NOT been submitted. The user must check the details and press the in-app confirmation button before the wallet is asked to sign.');
+            }
           } else toolAnswers.push(`The requested tool “${String(name || 'unknown')}” is not available for this role.`);
         } catch (error) {
           toolAnswers.push(`${String(name || 'Requested action')} failed: ${error instanceof Error ? error.message : 'Unexpected tool error.'}`);
@@ -245,6 +268,38 @@ export function NagrikSaathi({ onNavigate, onRefresh }: { onNavigate: (page: Wor
     } finally { setBusy(false); }
   };
 
+  const confirmDefectReport = async () => {
+    if (!reportDraft) return;
+    if (!session.isMetaMask || !(window as Window & { ethereum?: unknown }).ethereum) {
+      setMessages(current => [...current, { role: 'assistant', content: 'Connect a wallet on Arkiv Tiramisu before submitting. Your report is still only a draft.' }]);
+      return;
+    }
+    setSubmittingReport(true);
+    try {
+      let evidencePhotoCid = '';
+      if (reportPhoto) {
+        if (reportPhoto.size > 3 * 1024 * 1024 || !/^image\/(jpeg|png|webp|heic)$/.test(reportPhoto.type)) throw new Error('Choose a JPEG, PNG, WebP, or HEIC photo under 3 MB.');
+        const timestamp = Date.now().toString();
+        const digestBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', await reportPhoto.arrayBuffer()));
+        const digest = Array.from(digestBytes, byte => byte.toString(16).padStart(2, '0')).join('');
+        const message = `CivicArk evidence upload\n${session.address}\n${digest}\n${timestamp}`;
+        const signature = await (window as unknown as { ethereum: { request: (args: { method: string; params: string[] }) => Promise<string> } }).ethereum.request({ method: 'personal_sign', params: [message, session.address] });
+        const base64 = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1] || ''); reader.onerror = () => reject(new Error('Could not read photo.')); reader.readAsDataURL(reportPhoto); });
+        const upload = await fetch('/api/evidence', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ base64, name: reportPhoto.name, contentType: reportPhoto.type, address: session.address, timestamp, digest, signature }) });
+        const uploadResult = await upload.json();
+        if (!upload.ok) throw new Error(uploadResult.error || 'Photo upload failed.');
+        evidencePhotoCid = String(uploadResult.cid || '');
+      }
+      const result = await submitDefectChallenge({ ...reportDraft, evidencePhotoCid, reportedBy: reportDraft.anonymousDisplay ? '' : session.address, reporterRole: 'citizen' }, session);
+      setReportDraft(undefined);
+      setReportPhoto(null);
+      setMessages(current => [...current, { role: 'assistant', content: `Your report was submitted to Arkiv Tiramisu.\n\nTransaction: ${result.txHash}\nEntity: ${result.challenge.key}\n\n${result.challenge.anonymousDisplay ? 'Your identity is hidden in the public report display, but the public chain still shows the signing wallet.' : 'The report is publicly associated with the wallet that signed it.'}` }]);
+      onRefresh();
+    } catch (error) {
+      setMessages(current => [...current, { role: 'assistant', content: `The report was not submitted: ${error instanceof Error ? error.message : 'Unexpected error.'}` }]);
+    } finally { setSubmittingReport(false); }
+  };
+
   return <>
     <button className="saathi-launcher" onClick={() => setOpen(true)} aria-label="Open Nagrik Saathi"><Bot size={21} /><span>Nagrik Saathi</span></button>
     {open && <aside className="saathi-panel">
@@ -257,9 +312,19 @@ export function NagrikSaathi({ onNavigate, onRefresh }: { onNavigate: (page: Wor
             {message.role === 'assistant' && <button onClick={() => speak(message.content)} aria-label="Read aloud"><Volume2 size={13} /></button>}
           </div>
         ))}
+        {reportDraft && <section className="saathi-confirm">
+          <strong>Review issue report — not submitted</strong>
+          <span>{reportDraft.ward} · {reportDraft.roadName} · {reportDraft.severity}</span>
+          <span>{reportDraft.description}</span>
+          {reportDraft.latitude != null && reportDraft.longitude != null && <span>Coordinates: {reportDraft.latitude}, {reportDraft.longitude}</span>}
+          <label><input type="checkbox" checked={Boolean(reportDraft.anonymousDisplay)} onChange={event => setReportDraft(current => current ? { ...current, anonymousDisplay: event.target.checked } : current)} /> Hide my identity in the public report display (the chain still identifies the signing wallet)</label>
+          <span>{reportPhoto ? `Photo: ${reportPhoto.name}` : 'Photo optional · attach with the image button below'}</span>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => void confirmDefectReport()} disabled={submittingReport}>{submittingReport ? 'Waiting for wallet…' : 'Confirm and submit report'}</button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setReportDraft(undefined)} disabled={submittingReport}>Cancel</button>
+        </section>}
         {busy && <div className="saathi-message assistant">Thinking…</div>}
       </div>
-      <div className="saathi-input"><button className={recording ? 'saathi-recording' : ''} onClick={listen} aria-label="Voice input"><Mic size={17} /></button><input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder={recording ? 'Listening…' : 'Ask in Hindi, English or Hinglish…'} /><button onClick={send} aria-label="Send"><Send size={17} /></button></div>
+      <div className="saathi-input"><label className="saathi-attach" aria-label="Attach issue photo" title="Attach issue photo"><ImagePlus size={17} /><input type="file" accept="image/jpeg,image/png,image/webp,image/heic" onChange={event => { const file = event.target.files?.[0]; if (file && (file.size > 3 * 1024 * 1024 || !/^image\/(jpeg|png|webp|heic)$/.test(file.type))) { setMessages(current => [...current, { role: 'assistant', content: 'Choose a JPEG, PNG, WebP, or HEIC photo under 3 MB.' }]); event.target.value = ''; return; } setReportPhoto(file || null); }} /></label><button className={recording ? 'saathi-recording' : ''} onClick={listen} aria-label="Voice input"><Mic size={17} /></button><input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder={recording ? 'Listening…' : 'Ask in Hindi, English or Hinglish…'} /><button onClick={send} aria-label="Send"><Send size={17} /></button></div>
     </aside>}
   </>;
 }
