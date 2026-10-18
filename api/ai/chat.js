@@ -38,8 +38,20 @@ export default async function handler(req, res) {
   try {
     const upstream = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}`, 'HTTP-Referer': process.env.APP_URL || 'http://localhost:5173', 'X-Title': 'CivicArk' }, body: JSON.stringify({ model, messages: body.messages || [], tools, tool_choice: tools.length ? 'auto' : 'none' }) });
     const text = await upstream.text();
-    res.status(upstream.status).type('application/json').send(JSON.stringify({ ...JSON.parse(text), authorizedRole }));
+    let providerBody;
+    try {
+      providerBody = JSON.parse(text);
+    } catch {
+      // Providers and proxies can return plain-text/HTML errors. Keep the
+      // function response JSON so the chat UI can display a useful message.
+      return res.status(502).json({
+        error: `AI provider returned a non-JSON response (HTTP ${upstream.status}).`,
+        details: text.slice(0, 500),
+      });
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(upstream.status).json({ ...providerBody, authorizedRole });
   } catch (error) {
-    res.status(502).json({ error: error instanceof Error ? error.message : 'AI provider request failed.' });
+    return res.status(502).json({ error: error instanceof Error ? error.message : 'AI provider request failed.' });
   }
 }
