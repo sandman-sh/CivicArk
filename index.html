@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      // Safeguard against third-party wallet extension collision errors (e.g., evmAsk.js vs MetaMask)
+      (function() {
+        try {
+          var _eth = window.ethereum;
+          Object.defineProperty(window, 'ethereum', {
+            configurable: true,
+            enumerable: true,
+            get: function() { return _eth; },
+            set: function(val) { _eth = val; }
+          });
+        } catch (_) {}
+
+        window.addEventListener('error', function(event) {
+          if (
+            event &&
+            ((event.message && (
+              event.message.indexOf('Cannot redefine property: ethereum') !== -1 ||
+              event.message.indexOf('evmAsk') !== -1
+            )) ||
+            (event.filename && event.filename.indexOf('evmAsk') !== -1))
+          ) {
+            if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+            if (typeof event.preventDefault === 'function') event.preventDefault();
+            return true;
+          }
+        }, true);
+      })();
+    </script>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="application-name" content="CivicArk" />
+    <meta name="color-scheme" content="light dark" />
+    <title>CivicArk — Public Infrastructure Records</title>
+    <meta name="description" content="Explore municipal infrastructure contracts, milestones, warranties, and citizen reported defects in a public workspace connected to Arkiv." />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
